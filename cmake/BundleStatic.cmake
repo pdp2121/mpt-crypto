@@ -32,7 +32,14 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-foreach(_var MPT_LIB SECP_LIB CRYPTO_LIB OUT_LIB TARGET_OS)
+foreach(
+    _var
+    MPT_LIB
+    SECP_LIB
+    CRYPTO_LIB
+    OUT_LIB
+    TARGET_OS
+)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "BundleStatic: -D${_var}=... is required")
     endif()
@@ -52,25 +59,29 @@ file(REMOVE "${OUT_LIB}")
 if(TARGET_OS STREQUAL "Darwin")
     find_program(LIBTOOL_EXE libtool REQUIRED)
     execute_process(
-        COMMAND "${LIBTOOL_EXE}" -static -o "${OUT_LIB}"
-                "${MPT_LIB}" "${SECP_LIB}" "${CRYPTO_LIB}"
-        RESULT_VARIABLE _rc)
+        COMMAND
+            "${LIBTOOL_EXE}" -static -o "${OUT_LIB}" "${MPT_LIB}" "${SECP_LIB}"
+            "${CRYPTO_LIB}"
+        RESULT_VARIABLE _rc
+    )
     if(_rc)
         message(FATAL_ERROR "BundleStatic: libtool merge failed (${_rc})")
     endif()
 
-# ── Windows: lib.exe merges .lib archives ────────────────────────────────────
+    # ── Windows: lib.exe merges .lib archives ────────────────────────────────────
 elseif(TARGET_OS STREQUAL "Windows")
     find_program(LIB_EXE lib REQUIRED)
     execute_process(
-        COMMAND "${LIB_EXE}" /NOLOGO "/OUT:${OUT_LIB}"
-                "${MPT_LIB}" "${SECP_LIB}" "${CRYPTO_LIB}"
-        RESULT_VARIABLE _rc)
+        COMMAND
+            "${LIB_EXE}" /NOLOGO "/OUT:${OUT_LIB}" "${MPT_LIB}" "${SECP_LIB}"
+            "${CRYPTO_LIB}"
+        RESULT_VARIABLE _rc
+    )
     if(_rc)
         message(FATAL_ERROR "BundleStatic: lib.exe merge failed (${_rc})")
     endif()
 
-# ── ELF (Linux, incl. s390x): merge + hide OpenSSL symbols ───────────────────
+    # ── ELF (Linux, incl. s390x): merge + hide OpenSSL symbols ───────────────────
 else()
     find_program(LD_EXE ld REQUIRED)
     find_program(OBJCOPY_EXE objcopy REQUIRED)
@@ -94,7 +105,8 @@ else()
         execute_process(
             COMMAND "${NM_EXE}" -g --defined-only "${_lib}"
             OUTPUT_VARIABLE _nm_out
-            RESULT_VARIABLE _rc)
+            RESULT_VARIABLE _rc
+        )
         if(_rc)
             message(FATAL_ERROR "BundleStatic: nm failed on ${_lib} (${_rc})")
         endif()
@@ -107,7 +119,10 @@ else()
         endforeach()
     endforeach()
     if(_keep_syms STREQUAL "")
-        message(FATAL_ERROR "BundleStatic: no global symbols found to keep — refusing to hide everything")
+        message(
+            FATAL_ERROR
+            "BundleStatic: no global symbols found to keep — refusing to hide everything"
+        )
     endif()
     set(_keep_file "${_work}/keep-global.txt")
     file(WRITE "${_keep_file}" "${_keep_syms}")
@@ -117,19 +132,28 @@ else()
     #    secp256k1 internals, …) up front, so localizing OpenSSL in step 3 can
     #    never break mpt-crypto's own use of it. --whole-archive forces every
     #    member in (not just those resolving an already-undefined symbol).
+    #    -d (--define-common) allocates COMMON symbols (e.g. OpenSSL's x86
+    #    OPENSSL_ia32cap_P) into .bss as defined symbols. Without it they stay
+    #    SHN_COMMON, which objcopy cannot localize in step 3 — so an OpenSSL
+    #    common symbol would leak out globally.
     set(_combined "${_work}/mpt-crypto-combined.o")
     execute_process(
-        COMMAND "${LD_EXE}" -r -o "${_combined}"
-                --whole-archive "${MPT_LIB}" "${SECP_LIB}" "${CRYPTO_LIB}" --no-whole-archive
-        RESULT_VARIABLE _rc)
+        COMMAND
+            "${LD_EXE}" -r -d -o "${_combined}" --whole-archive "${MPT_LIB}"
+            "${SECP_LIB}" "${CRYPTO_LIB}" --no-whole-archive
+        RESULT_VARIABLE _rc
+    )
     if(_rc)
         message(FATAL_ERROR "BundleStatic: ld -r partial link failed (${_rc})")
     endif()
 
     # 3. Demote every global symbol except the kept API to local — hides OpenSSL.
     execute_process(
-        COMMAND "${OBJCOPY_EXE}" "--keep-global-symbols=${_keep_file}" "${_combined}"
-        RESULT_VARIABLE _rc)
+        COMMAND
+            "${OBJCOPY_EXE}" "--keep-global-symbols=${_keep_file}"
+            "${_combined}"
+        RESULT_VARIABLE _rc
+    )
     if(_rc)
         message(FATAL_ERROR "BundleStatic: objcopy symbol hide failed (${_rc})")
     endif()
@@ -137,7 +161,8 @@ else()
     # 4. Wrap the single relocatable object back into an archive.
     execute_process(
         COMMAND "${AR_EXE}" qcs "${OUT_LIB}" "${_combined}"
-        RESULT_VARIABLE _rc)
+        RESULT_VARIABLE _rc
+    )
     if(_rc)
         message(FATAL_ERROR "BundleStatic: ar failed (${_rc})")
     endif()

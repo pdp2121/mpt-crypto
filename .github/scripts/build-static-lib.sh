@@ -23,6 +23,14 @@ CONAN_ARGS=(
 )
 if [[ "${RUNNER_OS:-Linux}" != "Windows" ]]; then
   CONAN_ARGS+=(-o "secp256k1/*:fPIC=True" -o "openssl/*:fPIC=True")
+else
+  # Build against the DYNAMIC MSVC runtime (/MD). The static archive gets linked
+  # into consumers that use the dynamic CRT — the Python .pyd (extensions match
+  # the CPython DLL's /MD) and the Rust MSVC target (dynamic CRT by default). A
+  # static-CRT (/MT) build would mismatch and fail with LNK4098 + unresolved
+  # __imp_* CRT symbols. `shared=False` (a static .lib) is orthogonal to the CRT
+  # model — we want static libs that use the dynamic CRT.
+  CONAN_ARGS+=(-s "compiler.runtime=dynamic")
 fi
 conan install . "${CONAN_ARGS[@]}"
 
@@ -71,8 +79,10 @@ popd > /dev/null
 # so the Rust / Python builds don't have to rediscover them.
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
   BUNDLED="build-static/mpt-crypto-bundled.lib"
-  # OpenSSL 3.x's Win32 system deps (RAND/bcrypt, WinCrypt, sockets, UI).
-  SYS_LIBS=(crypt32 ws2_32 advapi32 user32 gdi32 bcrypt)
+  # OpenSSL 3.x's Win32 system deps (RAND/bcrypt, WinCrypt, sockets, UI), plus
+  # legacy_stdio_definitions for OpenSSL's inline stdio (__imp_* stdio symbols
+  # that live there under the dynamic UCRT).
+  SYS_LIBS=(crypt32 ws2_32 advapi32 user32 gdi32 bcrypt legacy_stdio_definitions)
 elif [[ "$(uname -s)" == "Darwin" ]]; then
   BUNDLED="build-static/libmpt-crypto-bundled.a"
   SYS_LIBS=(c++)

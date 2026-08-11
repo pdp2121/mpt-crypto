@@ -61,44 +61,66 @@ target_link_libraries(mpt-crypto PUBLIC secp256k1::secp256k1 OpenSSL::Crypto)
 # the mpt-crypto-sys Rust crate) can statically link one file. See
 # cmake/BundleStatic.cmake for the mechanics and the OpenSSL symbol-hiding
 # rationale. No-op for shared builds (the .so already folds the deps in).
-option(MPT_CRYPTO_BUNDLE_STATIC "Bundle static deps into one self-contained archive" OFF)
+option(
+    MPT_CRYPTO_BUNDLE_STATIC
+    "Bundle static deps into one self-contained archive"
+    OFF
+)
 if(MPT_CRYPTO_BUNDLE_STATIC AND NOT BUILD_SHARED_LIBS)
     # Resolve the concrete secp256k1 / libcrypto archive files. The Conan
     # CMakeDeps targets (secp256k1::secp256k1, OpenSSL::Crypto) are INTERFACE
     # aggregators, so $<TARGET_FILE:> can't be used; instead look up the real
     # `.a`/`.lib` inside the Conan-provided package lib dirs (NO_DEFAULT_PATH so
     # we never pick up a system OpenSSL by mistake).
-    if(NOT DEFINED secp256k1_LIB_DIRS_RELEASE OR NOT DEFINED openssl_LIB_DIRS_RELEASE)
-        message(FATAL_ERROR
+    if(
+        NOT DEFINED secp256k1_LIB_DIRS_RELEASE
+        OR NOT DEFINED openssl_LIB_DIRS_RELEASE
+    )
+        message(
+            FATAL_ERROR
             "MPT_CRYPTO_BUNDLE_STATIC: Conan lib-dir variables not found — this "
-            "path expects the CMakeDeps toolchain (see build-static-lib.sh).")
+            "path expects the CMakeDeps toolchain (see build-static-lib.sh)."
+        )
     endif()
-    find_library(MPT_CRYPTO_SECP256K1_ARCHIVE
+    find_library(
+        MPT_CRYPTO_SECP256K1_ARCHIVE
         NAMES secp256k1 libsecp256k1
-        PATHS ${secp256k1_LIB_DIRS_RELEASE} NO_DEFAULT_PATH REQUIRED)
-    find_library(MPT_CRYPTO_CRYPTO_ARCHIVE
+        PATHS ${secp256k1_LIB_DIRS_RELEASE}
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
+    find_library(
+        MPT_CRYPTO_CRYPTO_ARCHIVE
         NAMES crypto libcrypto
-        PATHS ${openssl_LIB_DIRS_RELEASE} NO_DEFAULT_PATH REQUIRED)
+        PATHS ${openssl_LIB_DIRS_RELEASE}
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
 
     if(WIN32)
         set(_bundled_name "mpt-crypto-bundled.lib")
     else()
         set(_bundled_name "libmpt-crypto-bundled.a")
     endif()
-    set(MPT_CRYPTO_BUNDLED_ARCHIVE "${CMAKE_BINARY_DIR}/${_bundled_name}"
-        CACHE FILEPATH "Path to the bundled self-contained static archive")
+    set(MPT_CRYPTO_BUNDLED_ARCHIVE
+        "${CMAKE_BINARY_DIR}/${_bundled_name}"
+        CACHE FILEPATH
+        "Path to the bundled self-contained static archive"
+    )
     add_custom_command(
-        TARGET mpt-crypto POST_BUILD
-        COMMAND "${CMAKE_COMMAND}"
-                "-DMPT_LIB=$<TARGET_FILE:mpt-crypto>"
-                "-DSECP_LIB=${MPT_CRYPTO_SECP256K1_ARCHIVE}"
-                "-DCRYPTO_LIB=${MPT_CRYPTO_CRYPTO_ARCHIVE}"
-                "-DOUT_LIB=${MPT_CRYPTO_BUNDLED_ARCHIVE}"
-                "-DTARGET_OS=${CMAKE_SYSTEM_NAME}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BundleStatic.cmake"
+        TARGET mpt-crypto
+        POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" "-DMPT_LIB=$<TARGET_FILE:mpt-crypto>"
+            "-DSECP_LIB=${MPT_CRYPTO_SECP256K1_ARCHIVE}"
+            "-DCRYPTO_LIB=${MPT_CRYPTO_CRYPTO_ARCHIVE}"
+            "-DOUT_LIB=${MPT_CRYPTO_BUNDLED_ARCHIVE}"
+            "-DTARGET_OS=${CMAKE_SYSTEM_NAME}" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BundleStatic.cmake"
         BYPRODUCTS "${MPT_CRYPTO_BUNDLED_ARCHIVE}"
         VERBATIM
-        COMMENT "Bundling self-contained static archive → ${_bundled_name}")
+        COMMENT "Bundling self-contained static archive → ${_bundled_name}"
+    )
 endif()
 
 # --- Testing ---
