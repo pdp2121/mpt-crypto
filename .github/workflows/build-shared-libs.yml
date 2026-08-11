@@ -1,27 +1,40 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Build Shared Libraries
 #
-# Builds the mpt-crypto C library as a shared library (.dylib / .so / .dll)
-# for each supported platform, producing binaries that client libraries
-# (xrpl4j via JNA, xrpl-py via ctypes, etc.) can load directly at runtime.
+# Builds the mpt-crypto C library for each supported platform in TWO forms:
 #
-# secp256k1 and OpenSSL are linked statically INTO the shared library, so
-# consumers do not need either installed on the target machine. The shared
-# library itself still has the usual OS-level dynamic dependencies (libSystem
-# on macOS, glibc/libstdc++ on Linux, Universal CRT on Windows) — there is no
-# attempt at full portability (no musl, no MT CRT).
+#   1. A SHARED library (.dylib / .so / .dll) that client libraries load at
+#      runtime (xrpl4j via JNA, xrpl-py via ctypes, etc.).
+#   2. A self-contained STATIC archive (.a / .lib) with secp256k1 + OpenSSL's
+#      libcrypto bundled IN (see cmake/BundleStatic.cmake), so a consumer that
+#      statically links it — e.g. the mpt-crypto-sys Rust crate — gets a
+#      single-file, self-contained binary with nothing to ship alongside.
+#
+# In BOTH forms secp256k1 and OpenSSL are folded in, so consumers do not need
+# either installed on the target machine. The binaries still have the usual
+# OS-level dynamic dependencies (libSystem on macOS, glibc/libstdc++ on Linux,
+# Universal CRT on Windows) — no attempt at full portability (no musl, no MT CRT).
+# On Linux the static archive additionally HIDES the OpenSSL symbols so it can be
+# linked into a program that also links a different libcrypto (e.g. a Rust binary
+# whose TLS stack uses the system OpenSSL) without a collision.
 #
 # The output artifacts use CMake's natural library names under per-platform
 # subdirectories (OS × arch), plus the public headers shared across platforms:
 #   include/secp256k1_mpt.h             (public API)
 #   include/utility/mpt_utility.h       (public API)
-#   darwin-aarch64/libmpt-crypto.dylib  (macOS ARM64)
-#   darwin-x86-64/libmpt-crypto.dylib   (macOS x86_64)
-#   linux-aarch64/libmpt-crypto.so      (Linux ARM64)
-#   linux-x86-64/libmpt-crypto.so       (Linux x86_64)
-#   linux-s390x/libmpt-crypto.so        (Linux s390x, IBM Z — QEMU-built)
-#   win32-x86-64/mpt-crypto.dll         (Windows x86_64)
-#   win32-x86-64/mpt-crypto.lib         (Windows import library, for linking)
+#   darwin-aarch64/libmpt-crypto.dylib  (macOS ARM64, shared)
+#   darwin-aarch64/libmpt-crypto.a      (macOS ARM64, self-contained static)
+#   darwin-x86-64/libmpt-crypto.dylib   (macOS x86_64, shared)
+#   darwin-x86-64/libmpt-crypto.a       (macOS x86_64, self-contained static)
+#   linux-aarch64/libmpt-crypto.so      (Linux ARM64, shared)
+#   linux-aarch64/libmpt-crypto.a       (Linux ARM64, self-contained static)
+#   linux-x86-64/libmpt-crypto.so       (Linux x86_64, shared)
+#   linux-x86-64/libmpt-crypto.a        (Linux x86_64, self-contained static)
+#   linux-s390x/libmpt-crypto.so        (Linux s390x, IBM Z — QEMU-built, shared)
+#   linux-s390x/libmpt-crypto.a         (Linux s390x, self-contained static)
+#   win32-x86-64/mpt-crypto.dll         (Windows x86_64, shared)
+#   win32-x86-64/mpt-crypto.lib         (Windows import library, for the DLL)
+#   win32-x86-64/mpt-crypto-static.lib  (Windows x86_64, self-contained static)
 #
 # Platforms without a native GitHub-hosted runner (s390x) are built inside a
 # --platform linux/<arch> Docker container via QEMU user-mode emulation.
@@ -109,10 +122,12 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
 
-      - name: Build and test
+      - name: Build and test (shared + self-contained static)
         if: matrix.docker_platform == ''
         shell: bash
-        run: ./.github/scripts/build-shared-lib.sh
+        run: |
+          ./.github/scripts/build-shared-lib.sh
+          ./.github/scripts/build-static-lib.sh
 
       - name: Build and test in ${{ matrix.docker_platform }} container
         if: matrix.docker_platform != ''
@@ -126,20 +141,29 @@ jobs:
               DEBIAN_FRONTEND=noninteractive apt-get install -qq -y \
                 python3 python3-pip \
                 cmake ninja-build \
-                build-essential pkg-config ca-certificates git
+                build-essential binutils pkg-config ca-certificates git
               pip install --break-system-packages conan
               ./.github/scripts/build-shared-lib.sh
+              ./.github/scripts/build-static-lib.sh
             '
 
-      - name: Stage shared library under output/<platform>/
+      - name: Stage shared + static libraries under output/<platform>/
         shell: bash
         env:
           LIB_DIR: ${{ runner.os == 'Windows' && 'build/Release' || 'build' }}
         run: |
-          mkdir -p "output/${{ matrix.platform }}"
-          cp "${LIB_DIR}/${{ matrix.lib_filename }}" "output/${{ matrix.platform }}/"
+          dest="output/${{ matrix.platform }}"
+          mkdir -p "$dest"
+          # Shared library (+ Windows import lib).
+          cp "${LIB_DIR}/${{ matrix.lib_filename }}" "$dest/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "${LIB_DIR}/mpt-crypto.lib" "output/${{ matrix.platform }}/"
+            cp "${LIB_DIR}/mpt-crypto.lib" "$dest/"
+            # Self-contained static archive (distinct name to avoid clashing with
+            # the DLL's import library above).
+            cp "build-static/mpt-crypto-bundled.lib" "$dest/mpt-crypto-static.lib"
+          else
+            # Self-contained static archive under the consumer-expected name.
+            cp "build-static/libmpt-crypto-bundled.a" "$dest/libmpt-crypto.a"
           fi
 
       - name: Upload artifact
