@@ -35,6 +35,9 @@
 #   win32-x86-64/mpt-crypto.dll         (Windows x86_64, shared)
 #   win32-x86-64/mpt-crypto.lib         (Windows import library, for the DLL)
 #   win32-x86-64/mpt-crypto-static.lib  (Windows x86_64, self-contained static)
+#   <platform>/mpt-crypto-static.link-libs.txt
+#       (per-platform list of system libs a consumer must link alongside the
+#        static archive — the C++ runtime + OpenSSL's OS deps)
 #
 # Platforms without a native GitHub-hosted runner (s390x) are built inside a
 # --platform linux/<arch> Docker container via QEMU user-mode emulation.
@@ -165,6 +168,10 @@ jobs:
             # Self-contained static archive under the consumer-expected name.
             cp "build-static/libmpt-crypto-bundled.a" "$dest/libmpt-crypto.a"
           fi
+          # Manifest of the system libs a consumer must link alongside the static
+          # archive (emitted by build-static-lib.sh) — travels in the bundle so
+          # the Rust / Python builds don't rediscover them.
+          cp "build-static/mpt-crypto-static.link-libs.txt" "$dest/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

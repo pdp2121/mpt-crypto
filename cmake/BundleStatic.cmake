@@ -80,6 +80,15 @@ else()
     # 1. Collect the symbols to KEEP global: mpt-crypto's own API + secp256k1's
     #    public API. Everything else (OpenSSL, and any private helpers) is made
     #    local in step 3.
+    #
+    #    WARNING — secp256k1 stays GLOBAL by design: the published Rust/Python
+    #    bindings call stock secp256k1_* through this archive. That is safe for
+    #    those consumers only because they don't co-link a *stock* secp256k1
+    #    (the Rust `secp256k1` crate renames its symbols to `rustsecp256k1_v0_*`;
+    #    CPython doesn't use libsecp256k1). Do NOT statically co-link this bundle
+    #    with an unrenamed secp256k1 (e.g. rippled) — the duplicated secp256k1_*
+    #    symbols would collide. Such a consumer should use the SHARED library, or
+    #    this bundle would need a variant that also hides secp256k1.
     set(_keep_syms "")
     foreach(_lib "${MPT_LIB}" "${SECP_LIB}")
         execute_process(

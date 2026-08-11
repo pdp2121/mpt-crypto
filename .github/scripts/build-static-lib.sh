@@ -64,48 +64,114 @@ ctest "${CTEST_ARGS[@]}"
 popd > /dev/null
 
 # ── Verify the bundled archive is self-contained & correctly scoped ──────────
+# Resolve the bundle path and the platform's REQUIRED extra link libraries. The
+# self-contained archive still needs the C++ runtime (mpt_utility.cpp) + OpenSSL's
+# OS-level deps — the same libs the shared library leaves dynamic. A consumer that
+# static-links the bundle MUST also link these; we emit them as a manifest below
+# so the Rust / Python builds don't have to rediscover them.
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
   BUNDLED="build-static/mpt-crypto-bundled.lib"
+  # OpenSSL 3.x's Win32 system deps (RAND/bcrypt, WinCrypt, sockets, UI).
+  SYS_LIBS=(crypt32 ws2_32 advapi32 user32 gdi32 bcrypt)
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  BUNDLED="build-static/libmpt-crypto-bundled.a"
+  SYS_LIBS=(c++)
 else
   BUNDLED="build-static/libmpt-crypto-bundled.a"
+  # dl: OpenSSL 3.x provider loading (dlopen/dlsym). m/pthread: libcrypto.
+  SYS_LIBS=(stdc++ pthread dl m)
 fi
 [[ -f "$BUNDLED" ]] || { echo "ERROR: bundled archive not produced at $BUNDLED"; exit 1; }
 echo "Bundled archive: $BUNDLED ($(du -h "$BUNDLED" | cut -f1))"
 
-# ── (1) Authoritative self-containment: link a tiny program against ONLY the
-#        bundle + platform base libs (no -lcrypto/-lssl/-lsecp256k1/-lz). If any
-#        dependency wasn't folded in, the link fails here. Then run it. ─────────
-if [[ "${RUNNER_OS:-Linux}" != "Windows" ]]; then
-  TESTDIR="$(mktemp -d)"
-  cat > "${TESTDIR}/linktest.c" <<'EOF'
+# ── Emit the required-system-libs manifest next to the archive ───────────────
+MANIFEST="$(dirname "$BUNDLED")/mpt-crypto-static.link-libs.txt"
+{
+  echo "# System libraries a consumer must link ALONGSIDE the self-contained"
+  echo "# mpt-crypto static archive (C++ runtime + OpenSSL's OS deps). These are"
+  echo "# the same libs the shared library leaves dynamic. One name per line,"
+  echo "# no -l prefix / no .lib suffix."
+  for l in "${SYS_LIBS[@]}"; do echo "$l"; done
+} > "$MANIFEST"
+echo "Required system libs (also staged as $(basename "$MANIFEST")): ${SYS_LIBS[*]}"
+
+# ── (1) Authoritative self-containment: link a small program against ONLY the
+#        bundle + the platform system libs (no -lcrypto/-lssl/-lsecp256k1/-lz).
+#        It calls several entry points AND takes the address of the heavy
+#        bulletproof/proof members, so the linker must pull + resolve those
+#        members too — a member whose deps didn't fold in can't slip through by
+#        going unreferenced. Then it runs. ────────────────────────────────────
+TESTDIR="$(mktemp -d)"
+cat > "${TESTDIR}/linktest.c" <<'EOF'
 #include <stdint.h>
 #include <stdio.h>
-/* Declared directly so the test needs no dependency headers. */
-int mpt_generate_keypair(uint8_t* out_privkey, uint8_t* out_pubkey);
-int main(void) {
-    uint8_t sk[32] = {0}, pk[33] = {0};
-    int rc = mpt_generate_keypair(sk, pk);
-    /* Compressed secp256k1 pubkeys start 0x02/0x03 — sanity-check it ran. */
-    printf("mpt_generate_keypair rc=%d pk[0]=0x%02x\n", rc, pk[0]);
-    return rc == 0 && (pk[0] == 0x02 || pk[0] == 0x03) ? 0 : 1;
+
+/* Called with valid inputs: exercise RNG + secp256k1 + ElGamal + commitments,
+   which between them reference the OpenSSL-heavy and secp256k1-heavy members. */
+int mpt_generate_keypair(uint8_t* sk, uint8_t* pk);
+int mpt_generate_blinding_factor(uint8_t factor[32]);
+int mpt_encrypt_amount(uint64_t amount, const uint8_t pk[33],
+                       const uint8_t blinding[32], uint8_t out_ct[66]);
+int mpt_get_pedersen_commitment(uint64_t amount, const uint8_t blinding[32],
+                                uint8_t out[33]);
+
+/* Reference-only: force the linker to pull the bulletproof + proof members (and
+   resolve THEIR deps) without executing their awkward signatures. */
+extern int secp256k1_bulletproof_prove_agg(void);
+extern int secp256k1_bulletproof_verify_agg(void);
+extern int mpt_get_confidential_send_proof(void);
+extern int mpt_get_clawback_proof(void);
+
+int main(int argc, char** argv) {
+    (void)argv;
+    uint8_t sk[32] = {0}, pk[33] = {0}, bf[32] = {0}, ct[66] = {0}, com[33] = {0};
+
+    if (mpt_generate_keypair(sk, pk) != 0) return 1;
+    if (!(pk[0] == 0x02 || pk[0] == 0x03)) return 1;   /* valid compressed pubkey */
+    if (mpt_generate_blinding_factor(bf) != 0) return 2;
+    if (mpt_encrypt_amount(42, pk, bf, ct) != 0) return 3;
+    if (mpt_get_pedersen_commitment(42, bf, com) != 0) return 4;
+
+    /* Keep the heavy references live so the optimizer cannot drop them. */
+    void* refs[] = {
+        (void*)&secp256k1_bulletproof_prove_agg,
+        (void*)&secp256k1_bulletproof_verify_agg,
+        (void*)&mpt_get_confidential_send_proof,
+        (void*)&mpt_get_clawback_proof,
+    };
+    volatile void* keep = refs[(unsigned)argc % 4];
+    if (keep == 0) return 5;
+
+    printf("linktest OK: keypair+blinding+encrypt+commitment ran; "
+           "bulletproof/proof members linked\n");
+    return 0;
 }
 EOF
-  # Base system libs only — the same ones the shared lib leaves dynamic.
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    BASE_LIBS=(-lc++)
-    CC_BIN="${CC:-clang}"
-  else
-    BASE_LIBS=(-lstdc++ -lpthread -ldl -lm)
-    CC_BIN="${CC:-cc}"
-  fi
-  if ! "${CC_BIN}" "${TESTDIR}/linktest.c" "$BUNDLED" "${BASE_LIBS[@]}" -o "${TESTDIR}/linktest"; then
+
+if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
+  # MSVC: cl links the CRT automatically; add OpenSSL's Win32 system libs.
+  # NOTE: first exercised in CI (no local MSVC) — the manifest above is the
+  # source of truth for the system-lib list if this needs an adjustment.
+  BUNDLED_ABS="$(pwd -W 2>/dev/null || pwd)/$BUNDLED"
+  WIN_LIBS=(); for l in "${SYS_LIBS[@]}"; do WIN_LIBS+=("${l}.lib"); done
+  (
+    cd "$TESTDIR"
+    # //nologo: MSYS/git-bash rewrites a leading '/' into a path; '//' yields '/'.
+    cl //nologo linktest.c "$BUNDLED_ABS" "${WIN_LIBS[@]}"
+  ) || { echo "ERROR: Windows bundle is NOT self-contained — cl link failed."; exit 1; }
+  "${TESTDIR}/linktest.exe" || { echo "ERROR: linked program did not run cleanly."; exit 1; }
+  echo "OK: links + runs standalone on Windows (self-contained)."
+else
+  LINK_LIBS=(); for l in "${SYS_LIBS[@]}"; do LINK_LIBS+=("-l${l}"); done
+  if [[ "$(uname -s)" == "Darwin" ]]; then CC_BIN="${CC:-clang}"; else CC_BIN="${CC:-cc}"; fi
+  if ! "${CC_BIN}" "${TESTDIR}/linktest.c" "$BUNDLED" "${LINK_LIBS[@]}" -o "${TESTDIR}/linktest"; then
     echo "ERROR: bundled archive is NOT self-contained — link against it alone failed."
     exit 1
   fi
   "${TESTDIR}/linktest" || { echo "ERROR: linked program did not run cleanly."; exit 1; }
   echo "OK: links + runs standalone (self-contained)."
-  rm -rf "${TESTDIR}"
 fi
+rm -rf "${TESTDIR}"
 
 # ── (2) Symbol visibility (nm — skipped on Windows, which lacks it here) ──────
 if command -v nm > /dev/null 2>&1 && [[ "${RUNNER_OS:-Linux}" != "Windows" ]]; then
