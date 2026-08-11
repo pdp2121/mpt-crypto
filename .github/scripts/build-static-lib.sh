@@ -159,15 +159,16 @@ int main(int argc, char** argv) {
 EOF
 
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
-  # MSVC: cl links the CRT automatically; add OpenSSL's Win32 system libs.
-  # NOTE: first exercised in CI (no local MSVC) — the manifest above is the
-  # source of truth for the system-lib list if this needs an adjustment.
+  # MSVC: use the DYNAMIC CRT (-MD) to match the bundle, which is built with
+  # compiler.runtime=dynamic. cl.exe defaults to /MT (static CRT) when no
+  # runtime flag is given, which would clash with the bundle's /MD objects
+  # (LNK4098 + unresolved __imp_* CRT symbols). Dash-form flags (-nologo -MD)
+  # avoid MSYS/git-bash rewriting a leading '/' into a path.
   BUNDLED_ABS="$(pwd -W 2>/dev/null || pwd)/$BUNDLED"
   WIN_LIBS=(); for l in "${SYS_LIBS[@]}"; do WIN_LIBS+=("${l}.lib"); done
   (
     cd "$TESTDIR"
-    # //nologo: MSYS/git-bash rewrites a leading '/' into a path; '//' yields '/'.
-    cl //nologo linktest.c "$BUNDLED_ABS" "${WIN_LIBS[@]}"
+    cl -nologo -MD linktest.c "$BUNDLED_ABS" "${WIN_LIBS[@]}"
   ) || { echo "ERROR: Windows bundle is NOT self-contained — cl link failed."; exit 1; }
   "${TESTDIR}/linktest.exe" || { echo "ERROR: linked program did not run cleanly."; exit 1; }
   echo "OK: links + runs standalone on Windows (self-contained)."
