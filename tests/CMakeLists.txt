@@ -43,6 +43,22 @@ function(add_mpt_test TEST_NAME TEST_SOURCE)
         add_executable(${TEST_NAME}_shared ${TEST_SOURCE})
         target_link_libraries(${TEST_NAME}_shared PRIVATE ${_shared_deps})
         add_test(NAME ${TEST_NAME}_shared COMMAND ${TEST_NAME}_shared)
+
+        # Windows has no rpath, so the shared-variant .exe can't find the DLL
+        # (which lives in the shared/ output dir) at runtime — it would abort
+        # with STATUS_DLL_NOT_FOUND (0xC0000135). Copy mpt-crypto.dll next to the
+        # test executable. On ELF/Mach-O the build rpath already handles this.
+        if(WIN32)
+            add_custom_command(
+                TARGET ${TEST_NAME}_shared
+                POST_BUILD
+                COMMAND
+                    ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:mpt-crypto-shared>
+                    $<TARGET_FILE_DIR:${TEST_NAME}_shared>
+                VERBATIM
+            )
+        endif()
     endif()
 endfunction()
 
