@@ -20,9 +20,13 @@
 # collision with a Rust consumer: `secp256k1-sys` renames its symbols to
 # `rustsecp256k1_v0_*`, a disjoint namespace.
 #
-# macOS and Windows skip the hiding step: their default TLS backends (Secure
-# Transport / SChannel) do not link OpenSSL, so a consumer never ends up with two
-# libcrypto copies, and Windows static-lib symbols are not exported anyway.
+# macOS and Windows skip the hiding step: their DEFAULT TLS backends (Secure
+# Transport / SChannel) do not link OpenSSL, so a typical consumer never ends up
+# with two libcrypto copies, and Windows static-lib symbols are not exported
+# anyway. CAVEAT: a consumer that EXPLICITLY links a different OpenSSL (e.g.
+# openssl-sys / the Python `cryptography` wheel) and statically co-links this
+# bundle on macOS could still hit two-copy interposition; such a consumer should
+# use the shared library, or a macOS-hiding variant would be needed.
 #
 # Invoked in CMake script mode:
 #   cmake -DMPT_LIB=<libmpt-crypto.a> -DSECP_LIB=<libsecp256k1.a> \

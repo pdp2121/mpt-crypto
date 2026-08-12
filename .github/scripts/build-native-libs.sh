@@ -212,15 +212,24 @@ if command -v nm > /dev/null 2>&1 && [[ "${RUNNER_OS:-Linux}" != "Windows" ]]; t
   echo "OK: mpt-crypto + secp256k1 API symbols are global."
 
   # (b) OpenSSL hidden (ELF/Linux only — macOS keeps them, which is fine there).
+  #     ALLOWLIST check: the only global defined symbols permitted are the kept
+  #     API that BundleStatic localized against (keep-global.txt = mpt_* +
+  #     secp256k1_*). ANY other global is a hiding failure — and OpenSSL 3.x's
+  #     surface is far larger than a handful of prefixes (EVP_/BN_/EC_/RSA_/
+  #     ossl_*/ASN1_/sha256_block_data_order/…), so a denylist would silently
+  #     miss a real leak. Comparing against the exact keep-list catches all of it.
   if [[ "$(uname -s)" == "Linux" ]]; then
-    leaked="$(nm -g --defined-only "$BUNDLED" 2>/dev/null \
-                | grep -E ' (EVP_[A-Za-z]|OPENSSL_[A-Za-z]|OSSL_)' || true)"
+    KEEP="$(dirname "$BUNDLED")/keep-global.txt"
+    [[ -f "$KEEP" ]] || { echo "ERROR: keep-global.txt not found ($KEEP) — cannot verify symbol hiding."; exit 1; }
+    globals="$(nm -g --defined-only "$BUNDLED" 2>/dev/null \
+                 | awk 'NF==3 && $2 ~ /^[A-Za-z]$/ {print $3}' | sort -u)"
+    leaked="$(comm -23 <(printf '%s\n' "$globals") <(sort -u "$KEEP") || true)"
     if [[ -n "$leaked" ]]; then
-      echo "ERROR: OpenSSL symbols are still global (should be hidden):"
-      echo "$leaked" | head
+      echo "ERROR: non-API global symbols leaked (OpenSSL hiding failed):"
+      printf '%s\n' "$leaked" | head -20
       exit 1
     fi
-    echo "OK: OpenSSL symbols are hidden (localized)."
+    echo "OK: only the kept API (mpt_* + secp256k1_*) is global; OpenSSL hidden."
   fi
 fi
 
