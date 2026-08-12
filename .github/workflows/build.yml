@@ -79,6 +79,8 @@ jobs:
             -b missing \
             -s "build_type=${BUILD_TYPE}" \
             -o "&:tests=True" \
+            -c tools.files.download:retry=3 \
+            -c tools.files.download:retry_wait=10 \
             --profile:all "${CONAN_PROFILE}"
 
       - name: Run CMake

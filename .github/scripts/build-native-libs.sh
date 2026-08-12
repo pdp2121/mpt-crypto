@@ -18,6 +18,11 @@ conan remote add --index 0 --force xrplf https://conan.ripplex.io
 CONAN_ARGS=(
   -of build
   --build=missing
+  # Retry recipe source downloads (e.g. secp256k1's tarball from github.com),
+  # which intermittently 503 / drop the connection. Modest count so a genuine
+  # outage still fails reasonably fast rather than hanging the build.
+  -c tools.files.download:retry=3
+  -c tools.files.download:retry_wait=10
   -s build_type=Release
   -o "&:shared=False"
   -o "&:tests=True"
