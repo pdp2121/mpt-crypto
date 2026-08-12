@@ -47,7 +47,7 @@ conan install . "${CONAN_ARGS[@]}"
 
 # Conan's generator subfolder nests differently across versions/layouts; locate
 # the toolchain rather than hardcoding a path.
-TOOLCHAIN="$(find build -name conan_toolchain.cmake | head -1)"
+TOOLCHAIN="$(find build -name conan_toolchain.cmake -print -quit)"
 [[ -n "$TOOLCHAIN" ]] || { echo "ERROR: conan_toolchain.cmake not found under build/"; exit 1; }
 
 CMAKE_ARGS=(
@@ -75,7 +75,8 @@ cmake "${CMAKE_ARGS[@]}"
 
 cmake --build build --config Release
 
-# Tests link against the (thin) static target, validating that the build is sound.
+# ctest runs each test against the static target and — since MPT_CRYPTO_BUILD_SHARED
+# is on — a `*_shared` variant against the shared library, validating both forms.
 pushd build > /dev/null
 CTEST_ARGS=(--output-on-failure)
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
@@ -139,8 +140,11 @@ int mpt_encrypt_amount(uint64_t amount, const uint8_t pk[33],
 int mpt_get_pedersen_commitment(uint64_t amount, const uint8_t blinding[32],
                                 uint8_t out[33]);
 
-/* Reference-only: force the linker to pull the bulletproof + proof members (and
-   resolve THEIR deps) without executing their awkward signatures. */
+/* Reference-only (not called — awkward signatures): asserts these public
+   symbols exist. NOTE: these names are load-bearing — they must track the
+   library's exported API; if a symbol is renamed or the bulletproof module is
+   configured out, this test fails to LINK (a build error, not a hiding error).
+   Member inclusion itself is guaranteed by the whole-archive link above. */
 extern int secp256k1_bulletproof_prove_agg(void);
 extern int secp256k1_bulletproof_verify_agg(void);
 extern int mpt_get_confidential_send_proof(void);
@@ -188,13 +192,24 @@ if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
   echo "OK: links + runs standalone on Windows (self-contained)."
 else
   LINK_LIBS=(); for l in "${SYS_LIBS[@]}"; do LINK_LIBS+=("-l${l}"); done
-  if [[ "$(uname -s)" == "Darwin" ]]; then CC_BIN="${CC:-clang}"; else CC_BIN="${CC:-cc}"; fi
-  if ! "${CC_BIN}" "${TESTDIR}/linktest.c" "$BUNDLED" "${LINK_LIBS[@]}" -o "${TESTDIR}/linktest"; then
-    echo "ERROR: bundled archive is NOT self-contained — link against it alone failed."
+  # Force EVERY archive member into the link (macOS -force_load / GNU
+  # --whole-archive), so the self-containment check is COMPLETE: every member's
+  # external references must resolve against SYS_LIBS alone. A normal (on-demand)
+  # link would only pull the members reachable from the symbols referenced below,
+  # leaving other members' deps unverified.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    CC_BIN="${CC:-clang}"
+    WHOLE=(-Wl,-force_load,"$BUNDLED")
+  else
+    CC_BIN="${CC:-cc}"
+    WHOLE=(-Wl,--whole-archive "$BUNDLED" -Wl,--no-whole-archive)
+  fi
+  if ! "${CC_BIN}" "${TESTDIR}/linktest.c" "${WHOLE[@]}" "${LINK_LIBS[@]}" -o "${TESTDIR}/linktest"; then
+    echo "ERROR: bundled archive is NOT self-contained — whole-archive link failed."
     exit 1
   fi
   "${TESTDIR}/linktest" || { echo "ERROR: linked program did not run cleanly."; exit 1; }
-  echo "OK: links + runs standalone (self-contained)."
+  echo "OK: whole-archive links + runs standalone (self-contained)."
 fi
 rm -rf "${TESTDIR}"
 
@@ -223,7 +238,9 @@ if command -v nm > /dev/null 2>&1 && [[ "${RUNNER_OS:-Linux}" != "Windows" ]]; t
     [[ -f "$KEEP" ]] || { echo "ERROR: keep-global.txt not found ($KEEP) — cannot verify symbol hiding."; exit 1; }
     globals="$(nm -g --defined-only "$BUNDLED" 2>/dev/null \
                  | awk 'NF==3 && $2 ~ /^[A-Za-z]$/ {print $3}' | sort -u)"
-    leaked="$(comm -23 <(printf '%s\n' "$globals") <(sort -u "$KEEP") || true)"
+    # No `|| true` here: this is a security-relevant gate, so a pipeline failure
+    # (e.g. nm erroring) must abort under `set -o pipefail`, not silently pass.
+    leaked="$(comm -23 <(printf '%s\n' "$globals") <(sort -u "$KEEP"))"
     if [[ -n "$leaked" ]]; then
       echo "ERROR: non-API global symbols leaked (OpenSSL hiding failed):"
       printf '%s\n' "$leaked" | head -20

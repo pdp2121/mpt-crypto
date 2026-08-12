@@ -55,7 +55,7 @@
 # GitHub release.
 # ──────────────────────────────────────────────────────────────────────────────
 
-name: Build Shared Libraries
+name: Build Native Libraries
 
 on:
   workflow_call:
