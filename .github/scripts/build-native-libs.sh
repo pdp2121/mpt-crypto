@@ -9,10 +9,6 @@
 #     secp256k1 + OpenSSL merged in; see cmake/BundleStatic.cmake), and
 #   • the SHARED library (libmpt-crypto.{so,dylib,dll}), built as a sibling target
 #     from the same objects + the same static deps.
-#
-# This replaces the old build-static-lib.sh + build-shared-lib.sh split, whose
-# only real difference was a second, redundant Conan dependency build (which
-# rebuilt OpenSSL from source).
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
