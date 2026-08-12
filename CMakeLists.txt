@@ -20,8 +20,9 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Define The Library ---
-add_library(
-    mpt-crypto
+# Sources are shared between the static library and the optional shared library
+# (see MPT_CRYPTO_BUILD_SHARED below), so both are produced from one configure.
+set(MPT_CRYPTO_SOURCES
     src/bulletproof_aggregated.c
     src/commitments.c
     src/elgamal.c
@@ -32,6 +33,7 @@ add_library(
     src/proof_compact_convertback.c
     src/utility/mpt_utility.cpp
 )
+add_library(mpt-crypto ${MPT_CRYPTO_SOURCES})
 
 # --- Set Include Directories ---
 target_include_directories(mpt-crypto PUBLIC include)
@@ -46,11 +48,12 @@ check_type_size("__int128" HAVE___INT128)
 
 if(HAVE___INT128)
     message(STATUS "Build: Detected 128-bit integer support.")
-    target_compile_definitions(mpt-crypto PRIVATE SECP256K1_WIDEMUL_INT128)
+    set(MPT_CRYPTO_WIDEMUL SECP256K1_WIDEMUL_INT128)
 else()
     message(STATUS "Build: No 128-bit support detected.")
-    target_compile_definitions(mpt-crypto PRIVATE SECP256K1_WIDEMUL_INT64)
+    set(MPT_CRYPTO_WIDEMUL SECP256K1_WIDEMUL_INT64)
 endif()
+target_compile_definitions(mpt-crypto PRIVATE ${MPT_CRYPTO_WIDEMUL})
 
 # --- Link Dependencies ---
 target_link_libraries(mpt-crypto PUBLIC secp256k1::secp256k1 OpenSSL::Crypto)
@@ -79,7 +82,7 @@ if(MPT_CRYPTO_BUNDLE_STATIC AND NOT BUILD_SHARED_LIBS)
         message(
             FATAL_ERROR
             "MPT_CRYPTO_BUNDLE_STATIC: Conan lib-dir variables not found — this "
-            "path expects the CMakeDeps toolchain (see build-static-lib.sh)."
+            "path expects the CMakeDeps toolchain (see build-native-libs.sh)."
         )
     endif()
     find_library(
@@ -120,6 +123,39 @@ if(MPT_CRYPTO_BUNDLE_STATIC AND NOT BUILD_SHARED_LIBS)
         BYPRODUCTS "${MPT_CRYPTO_BUNDLED_ARCHIVE}"
         VERBATIM
         COMMENT "Bundling self-contained static archive → ${_bundled_name}"
+    )
+endif()
+
+# --- Optional shared library ---
+# Build libmpt-crypto.{so,dylib,dll} from the SAME sources + the SAME Conan
+# static deps, in this one configure — so runtime-loading consumers (e.g. xrpl4j
+# via JNA) are served WITHOUT a second dependency build. secp256k1 + OpenSSL are
+# folded in exactly as for the static bundle above. Outputs go to a `shared/`
+# subdir so the Windows import library (mpt-crypto.lib) does not collide with the
+# static library's own mpt-crypto.lib.
+option(
+    MPT_CRYPTO_BUILD_SHARED
+    "Also build a shared library from the same sources"
+    OFF
+)
+if(MPT_CRYPTO_BUILD_SHARED)
+    add_library(mpt-crypto-shared SHARED ${MPT_CRYPTO_SOURCES})
+    target_include_directories(mpt-crypto-shared PUBLIC include)
+    target_link_libraries(
+        mpt-crypto-shared
+        PUBLIC common secp256k1::secp256k1 OpenSSL::Crypto
+    )
+    target_compile_definitions(mpt-crypto-shared PRIVATE ${MPT_CRYPTO_WIDEMUL})
+    set_target_properties(
+        mpt-crypto-shared
+        PROPERTIES
+            OUTPUT_NAME mpt-crypto
+            # Export the C API from the DLL (matches the previous shared build);
+            # harmless on ELF/Mach-O.
+            WINDOWS_EXPORT_ALL_SYMBOLS ON
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shared"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shared"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shared"
     )
 endif()
 

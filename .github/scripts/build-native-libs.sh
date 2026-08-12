@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
-# Build mpt-crypto as a STATIC library and bundle secp256k1 + OpenSSL's
-# libcrypto into a single self-contained archive (see cmake/BundleStatic.cmake).
-# Mirrors build-shared-lib.sh, but with `shared=False` + the bundle step, and a
-# post-build self-containment / symbol-visibility verification.
+# ──────────────────────────────────────────────────────────────────────────────
+# build-native-libs.sh — build ALL of mpt-crypto's native libraries for one
+# platform from a SINGLE dependency build.
+#
+# One `conan install` (static secp256k1 + OpenSSL) + one CMake configure produces
+# BOTH:
+#   • the self-contained STATIC bundle (libmpt-crypto.a / mpt-crypto-static.lib,
+#     secp256k1 + OpenSSL merged in; see cmake/BundleStatic.cmake), and
+#   • the SHARED library (libmpt-crypto.{so,dylib,dll}), built as a sibling target
+#     from the same objects + the same static deps.
+#
+# This replaces the old build-static-lib.sh + build-shared-lib.sh split, whose
+# only real difference was a second, redundant Conan dependency build (which
+# rebuilt OpenSSL from source).
+# ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 conan profile detect --force
 conan remote add --index 0 --force xrplf https://conan.ripplex.io
 
 CONAN_ARGS=(
-  -of build-static
+  -of build
   --build=missing
   -s build_type=Release
   -o "&:shared=False"
@@ -36,14 +47,18 @@ conan install . "${CONAN_ARGS[@]}"
 
 # Conan's generator subfolder nests differently across versions/layouts; locate
 # the toolchain rather than hardcoding a path.
-TOOLCHAIN="$(find build-static -name conan_toolchain.cmake | head -1)"
-[[ -n "$TOOLCHAIN" ]] || { echo "ERROR: conan_toolchain.cmake not found under build-static/"; exit 1; }
+TOOLCHAIN="$(find build -name conan_toolchain.cmake | head -1)"
+[[ -n "$TOOLCHAIN" ]] || { echo "ERROR: conan_toolchain.cmake not found under build/"; exit 1; }
 
 CMAKE_ARGS=(
-  -B build-static
+  -B build
   -S .
   -DCMAKE_TOOLCHAIN_FILE:FILEPATH="${TOOLCHAIN}"
   -DMPT_CRYPTO_BUNDLE_STATIC=ON
+  -DMPT_CRYPTO_BUILD_SHARED=ON
+  # PIC so the static objects can seed the shared library AND so the static
+  # bundle links into a Python .pyd (extensions must be position-independent).
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
   CMAKE_ARGS+=(
@@ -58,11 +73,10 @@ else
 fi
 cmake "${CMAKE_ARGS[@]}"
 
-cmake --build build-static --config Release
+cmake --build build --config Release
 
-# Tests link against the (thin) static target, validating that the static build
-# itself is sound.
-pushd build-static > /dev/null
+# Tests link against the (thin) static target, validating that the build is sound.
+pushd build > /dev/null
 CTEST_ARGS=(--output-on-failure)
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
   export PATH="$(pwd)/Release:${PATH}"
@@ -78,16 +92,16 @@ popd > /dev/null
 # static-links the bundle MUST also link these; we emit them as a manifest below
 # so the Rust / Python builds don't have to rediscover them.
 if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
-  BUNDLED="build-static/mpt-crypto-bundled.lib"
+  BUNDLED="build/mpt-crypto-bundled.lib"
   # OpenSSL 3.x's Win32 system deps (RAND/bcrypt, WinCrypt, sockets, UI), plus
   # legacy_stdio_definitions for OpenSSL's inline stdio (__imp_* stdio symbols
   # that live there under the dynamic UCRT).
   SYS_LIBS=(crypt32 ws2_32 advapi32 user32 gdi32 bcrypt legacy_stdio_definitions)
 elif [[ "$(uname -s)" == "Darwin" ]]; then
-  BUNDLED="build-static/libmpt-crypto-bundled.a"
+  BUNDLED="build/libmpt-crypto-bundled.a"
   SYS_LIBS=(c++)
 else
-  BUNDLED="build-static/libmpt-crypto-bundled.a"
+  BUNDLED="build/libmpt-crypto-bundled.a"
   # dl: OpenSSL 3.x provider loading (dlopen/dlsym). m/pthread: libcrypto.
   SYS_LIBS=(stdc++ pthread dl m)
 fi
@@ -211,3 +225,29 @@ if command -v nm > /dev/null 2>&1 && [[ "${RUNNER_OS:-Linux}" != "Windows" ]]; t
 fi
 
 echo "Static bundle verification passed."
+
+# ── (3) Verify the shared library was produced and exports the C API ─────────
+if [[ "${RUNNER_OS:-Linux}" == "Windows" ]]; then
+  SHARED="build/shared/Release/mpt-crypto.dll"
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+  SHARED="build/shared/libmpt-crypto.dylib"
+else
+  SHARED="build/shared/libmpt-crypto.so"
+fi
+[[ -f "$SHARED" ]] || { echo "ERROR: shared library not produced at $SHARED"; exit 1; }
+echo "Shared library: $SHARED ($(du -h "$SHARED" | cut -f1))"
+
+# On unix, confirm the C API is exported (dynamic symbol table). Windows export
+# checking needs dumpbin; the CMake WINDOWS_EXPORT_ALL_SYMBOLS build is the
+# guarantee there.
+if [[ "${RUNNER_OS:-Linux}" != "Windows" ]] && command -v nm > /dev/null 2>&1; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    exported="$(nm -gU "$SHARED" 2>/dev/null | grep -E ' _?mpt_generate_keypair$' || true)"
+  else
+    exported="$(nm -D --defined-only "$SHARED" 2>/dev/null | grep -E ' mpt_generate_keypair$' || true)"
+  fi
+  [[ -n "$exported" ]] || { echo "ERROR: shared library does not export the mpt-crypto C API."; exit 1; }
+  echo "OK: shared library exports the mpt-crypto C API."
+fi
+
+echo "Native library build complete (static bundle + shared library)."

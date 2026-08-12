@@ -1,5 +1,4 @@
 build/
-build-static/
 .DS_Store
 cmake-build-*/
 .idea/

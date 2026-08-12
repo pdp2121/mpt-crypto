@@ -8,7 +8,7 @@
 # wasm-target secp256k1 + OpenSSL builds and the private-header symlinks that
 # build-wasm.sh produced under emcc_build/ (same versions, same forced
 # SECP256K1_WIDEMUL_INT64), so the tests link the exact field arithmetic that
-# ships. This is the WASM analog of the `ctest` step in build-shared-lib.sh.
+# ships. This is the WASM analog of the `ctest` step in build-native-libs.sh.
 #
 # Prerequisites: Emscripten SDK (emcc/em++/emcmake), Node, and cmake on PATH.
 set -euo pipefail

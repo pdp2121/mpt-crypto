@@ -41,7 +41,7 @@
 #
 # Platforms without a native GitHub-hosted runner (s390x) are built inside a
 # --platform linux/<arch> Docker container via QEMU user-mode emulation.
-# The same .github/scripts/build-shared-lib.sh drives both the native and
+# The same .github/scripts/build-native-libs.sh drives both the native and
 # the emulated builds — the workflow just decides where to run it.
 #
 # This workflow is invoked via `workflow_call` from build.yml — on every PR
@@ -128,9 +128,7 @@ jobs:
       - name: Build and test (shared + self-contained static)
         if: matrix.docker_platform == ''
         shell: bash
-        run: |
-          ./.github/scripts/build-shared-lib.sh
-          ./.github/scripts/build-static-lib.sh
+        run: ./.github/scripts/build-native-libs.sh
 
       - name: Build and test in ${{ matrix.docker_platform }} container
         if: matrix.docker_platform != ''
@@ -146,32 +144,33 @@ jobs:
                 cmake ninja-build \
                 build-essential binutils pkg-config ca-certificates git
               pip install --break-system-packages conan
-              ./.github/scripts/build-shared-lib.sh
-              ./.github/scripts/build-static-lib.sh
+              ./.github/scripts/build-native-libs.sh
             '
 
       - name: Stage shared + static libraries under output/<platform>/
         shell: bash
         env:
-          LIB_DIR: ${{ runner.os == 'Windows' && 'build/Release' || 'build' }}
+          # The shared library builds into a `shared/` subdir; VS appends the
+          # config. The static bundle + manifest sit at the build root.
+          SHARED_DIR: ${{ runner.os == 'Windows' && 'build/shared/Release' || 'build/shared' }}
         run: |
           dest="output/${{ matrix.platform }}"
           mkdir -p "$dest"
           # Shared library (+ Windows import lib).
-          cp "${LIB_DIR}/${{ matrix.lib_filename }}" "$dest/"
+          cp "${SHARED_DIR}/${{ matrix.lib_filename }}" "$dest/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "${LIB_DIR}/mpt-crypto.lib" "$dest/"
+            cp "${SHARED_DIR}/mpt-crypto.lib" "$dest/"
             # Self-contained static archive (distinct name to avoid clashing with
             # the DLL's import library above).
-            cp "build-static/mpt-crypto-bundled.lib" "$dest/mpt-crypto-static.lib"
+            cp "build/mpt-crypto-bundled.lib" "$dest/mpt-crypto-static.lib"
           else
             # Self-contained static archive under the consumer-expected name.
-            cp "build-static/libmpt-crypto-bundled.a" "$dest/libmpt-crypto.a"
+            cp "build/libmpt-crypto-bundled.a" "$dest/libmpt-crypto.a"
           fi
           # Manifest of the system libs a consumer must link alongside the static
-          # archive (emitted by build-static-lib.sh) — travels in the bundle so
+          # archive (emitted by build-native-libs.sh) — travels in the bundle so
           # the Rust / Python builds don't rediscover them.
-          cp "build-static/mpt-crypto-static.link-libs.txt" "$dest/"
+          cp "build/mpt-crypto-static.link-libs.txt" "$dest/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
