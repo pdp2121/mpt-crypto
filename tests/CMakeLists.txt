@@ -23,9 +23,27 @@ function(add_mpt_test TEST_NAME TEST_SOURCE)
         ${ARGN}
     )
 
+    # Static variant: links the static `mpt-crypto` target.
     add_executable(${TEST_NAME} ${TEST_SOURCE})
     target_link_libraries(${TEST_NAME} PRIVATE ${ARG_DEPENDENCIES})
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+
+    # Shared variant: when the shared library is also built (MPT_CRYPTO_BUILD_SHARED),
+    # run the SAME test against it, so both link forms are exercised by ctest.
+    # Swap the static `mpt-crypto` dep for `mpt-crypto-shared`; keep the rest.
+    if(MPT_CRYPTO_BUILD_SHARED AND TARGET mpt-crypto-shared)
+        set(_shared_deps "")
+        foreach(_dep IN LISTS ARG_DEPENDENCIES)
+            if(_dep STREQUAL "mpt-crypto")
+                list(APPEND _shared_deps mpt-crypto-shared)
+            else()
+                list(APPEND _shared_deps ${_dep})
+            endif()
+        endforeach()
+        add_executable(${TEST_NAME}_shared ${TEST_SOURCE})
+        target_link_libraries(${TEST_NAME}_shared PRIVATE ${_shared_deps})
+        add_test(NAME ${TEST_NAME}_shared COMMAND ${TEST_NAME}_shared)
+    endif()
 endfunction()
 
 # --------------------------------------------------------------------

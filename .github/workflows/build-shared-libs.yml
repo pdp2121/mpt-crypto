@@ -3,12 +3,13 @@
 #
 # Builds the mpt-crypto C library for each supported platform in TWO forms:
 #
-#   1. A SHARED library (.dylib / .so / .dll) that client libraries load at
-#      runtime (xrpl4j via JNA, xrpl-py via ctypes, etc.).
+#   1. A SHARED library (.dylib / .so / .dll) for consumers that load a native
+#      library dynamically at runtime — e.g. xrpl4j via JNA.
 #   2. A self-contained STATIC archive (.a / .lib) with secp256k1 + OpenSSL's
-#      libcrypto bundled IN (see cmake/BundleStatic.cmake), so a consumer that
-#      statically links it — e.g. the mpt-crypto-sys Rust crate — gets a
-#      single-file, self-contained binary with nothing to ship alongside.
+#      libcrypto bundled IN (see cmake/BundleStatic.cmake), for consumers that
+#      statically link it — e.g. the mpt-crypto-sys Rust crate and xrpl-py's CFFI
+#      extension — getting a single-file, self-contained binary with nothing to
+#      ship alongside.
 #
 # In BOTH forms secp256k1 and OpenSSL are folded in, so consumers do not need
 # either installed on the target machine. The binaries still have the usual
