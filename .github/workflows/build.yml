@@ -42,7 +42,10 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container != '' && fromJson(matrix.container) || null }}
-    timeout-minutes: 10
+    # Sanitizer builds (asan/tsan/ubsan) on the contended self-hosted runners
+    # legitimately exceed 10 minutes; a too-tight cap here fails build-and-test,
+    # and because `release` needs it, a tag push then silently skips publishing.
+    timeout-minutes: 30
 
     env:
       BUILD_DIR: build
@@ -154,3 +157,26 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --generate-notes \
             $PRERELEASE_FLAG
+
+  # On tag push only: fail loudly if the release did NOT publish. `release` is
+  # gated on build-and-test/native-binaries/wasm, so any failure there skips it
+  # — and a *skipped* release is otherwise silent (the tag exists, no artifacts
+  # attached, no red X). This guard runs regardless of upstream results and
+  # turns that silent skip into a visible failure with the culprit named.
+  release-guard:
+    name: Verify release published
+    if: ${{ always() && github.ref_type == 'tag' }}
+    needs: [build-and-test, native-binaries, wasm, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert the release job succeeded
+        run: |
+          if [[ "${{ needs.release.result }}" != "success" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} did not publish a release" \
+                 "(release job: ${{ needs.release.result }})."
+            echo "Upstream results — build-and-test: ${{ needs.build-and-test.result }}," \
+                 "native-binaries: ${{ needs.native-binaries.result }}," \
+                 "wasm: ${{ needs.wasm.result }}."
+            exit 1
+          fi
+          echo "Release for ${GITHUB_REF_NAME} published successfully."
